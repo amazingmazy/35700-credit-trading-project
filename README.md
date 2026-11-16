@@ -20,10 +20,18 @@ python main.py --strategy momentum_ls --start 2021-01-01 --benchmark AGG
 pytest -m "not slow"                               # fast synthetic tests (~30s)
 pytest                                             # + full real-data smoke run (~1 min)
 coverage run --source=src -m pytest && coverage report -m
+
+# research notebook (signal measurements on the clean ETFs; takes a few minutes)
+pip install -r requirements-notebook.txt
+jupyter nbconvert --to notebook --execute --inplace notebooks/credit_etf_research.ipynb
 ```
 
 Outputs per run: `daily.csv` (PnL, dividends, costs, equity, GMV, DV01, turnover…), `positions.csv`,
-`orders.csv`, `metrics.json`, `signal_ic.csv` (if the strategy defines `signal`), `report.png`.
+`orders.csv`, `metrics.json`, `signal_ic.csv` (if the strategy defines `signal`), `report.png`, `data_quality.json`.
+
+This branch departs from the original scaffold in a few places; each one is listed with its reason and test in
+[`DEVIATIONS.md`](DEVIATIONS.md). The gaps in the supplied corporate-action file are described in
+[`docs/data_gap.md`](docs/data_gap.md).
 
 ## Adding a strategy
 
@@ -56,7 +64,7 @@ Use `Strategy.generate_targets(ctx) -> pd.Series` (target **shares**) for full c
 | `history(field, lookback)` / `eod_row(field, lag>=1)` | EOD fields + `total_return` | dates **< T** only |
 | `snapshot()` / `price` | 3PM last/bid/ask/mid; decision price = last, else mid | day T |
 | `known_corp_actions()` | events with `declared_date <= T` | known at submission |
-| `positions`, `equity`, `universe(min_history)`, `weights_to_shares()` | portfolio state and helpers | point-in-time |
+| `positions`, `equity`, `universe(min_history)`, `weights_to_shares()` | portfolio state and helpers | point-in-time, except the data-quality exclusion in `universe()` (full sample) |
 
 Day-T close and volume are only used by `ExecutionHandler`/`Portfolio`. `tests/test_context.py` corrupts every value from day T onward
 and asserts the day-T decisions do not change.
@@ -81,6 +89,7 @@ BacktestResult ─► PerformanceAnalyzer (required metrics, IR vs AGG, costs/tu
 
 - **Calendar:** dates common to the EOD and 3PM files. This removes the 6 EOD-only bond holidays (Columbus Day and Veterans Day).
 - **Universe:** the 213 symbology ISINs. Strategies should filter point-in-time with `ctx.universe(min_history)`. 9 ETFs list during the sample and none delist.
+- **Data quality (`clean_universe_only=True` by default):** 167 ETFs have a missing dividend record (the file has almost no cash records for Dec 2024 – Jul 2025) or an unrecorded reverse split (BBAG, USFR). They are left out of `ctx.universe()` and any target in them is rejected, for the whole sample; 46 ETFs remain. This list is built from the full sample: it is a filter on the integrity of the supplied records, not a point-in-time filter. Set `clean_universe_only=False` for the original behaviour.
 - **Corporate actions** are applied on `ex_date_adj`; an ex-date on a removed holiday rolls to the next trading day.
   - Income, Cap Gains, Special/Regular Cash and ROC are paid as cash per share held at the T-1 close (short positions pay them).
   - A stock split multiplies the share count by `dividend_amount`.
@@ -90,3 +99,5 @@ BacktestResult ─► PerformanceAnalyzer (required metrics, IR vs AGG, costs/tu
 - **Gross exposure:** sized to $57MM at 3PM prices (a $3MM buffer for 3PM→close moves). By default the sizing assumes the worst case: gross-reducing orders may not fill while gross-increasing orders fill fully. Post-trade GMV is checked against the $60MM cap and any breach is flagged.
 - **DV01:** per share = `dv01 / 100` (YAS_RISK ≈ close × modDur / 100), so aggregate DV01 = Σ q · dv01 / 100 in $ per −1bp, with long positive. Durations above 50 or below 0, and negative DV01s, are treated as bad data.
 - **Metrics:** zero rates, financing, borrow and cash interest. r_T = PnL_T / $10MM. ddof = 1, 252 days per year, every day included. Warm-up days are reported separately.
+- **Sharpe, two versions:** `sharpe` is the project formula (r_f = 0, zero financing). It counts the whole yield of a net-long book as excess return, so a T-bill ETF, which earns only the risk-free rate, scores far above 1 on it. `sharpe_net_of_financing` charges the T-bill rate (SHV `yield` field, lagged a day) on the net dollar exposure carried overnight; the two are equal for a dollar-neutral book. We work with the net-of-financing figure, show the project-formula figure only next to it, and audit any net-of-financing Sharpe above 1 before reporting it.
+- **IC t-stats:** for 5- and 20-day horizons the t-stat allows for overlapping forward windows (Newey-West); `t_stat_naive` is the unadjusted value.

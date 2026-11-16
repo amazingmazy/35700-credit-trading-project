@@ -1,6 +1,7 @@
 """Pre-trade risk: turn a strategy's raw targets into compliant targets using ONLY decision-time data.
 
 Checks, in order:
+  0. Blocked symbols (data-quality exclusions, optional) -> target 0, logged as blocked.
   1. Normalise: omitted symbols -> 0, NaN / non-finite -> keep current position.
   2. Untradable symbols (no valid 3PM price) -> keep current position (order rejected).
   3. Gross target: scale the book so its 3PM gross <= config.gmv_target.
@@ -22,9 +23,10 @@ from src.config import BacktestConfig
 @dataclass
 class RiskResult:
     targets: pd.Series
-    rejected: list[str] = field(default_factory=list)
+    rejected: list[str] = field(default_factory=list)  # no valid 3PM price
     gross_scale: float = 1.0
     worst_case_scale: float = 1.0
+    blocked: list[str] = field(default_factory=list)  # excluded for data-quality reasons
 
 
 class RiskManager:
@@ -46,11 +48,25 @@ class RiskManager:
         arr[bad] = positions.to_numpy(dtype=float)[bad]
         return pd.Series(arr, index=symbols)
 
-    def check(self, raw_targets: pd.Series | None, positions: pd.Series, price: pd.Series) -> RiskResult:
+    def check(
+        self,
+        raw_targets: pd.Series | None,
+        positions: pd.Series,
+        price: pd.Series,
+        blocked: np.ndarray | None = None,
+    ) -> RiskResult:
+        """`blocked` is an optional boolean array over positions.index: symbols that must not be held
+        (data-quality exclusions). Their targets are forced to zero before the other checks."""
         cfg = self.config
         t = self.normalize_targets(raw_targets, positions).to_numpy(copy=True)
         q = positions.to_numpy(dtype=float)
         p = price.reindex(positions.index).to_numpy(dtype=float)
+
+        blocked_mask = np.zeros(len(t), dtype=bool)
+        if blocked is not None:
+            is_blocked = np.asarray(blocked, dtype=bool)
+            blocked_mask = is_blocked & (t != 0)
+            t[is_blocked] = 0.0
 
         tradable = np.isfinite(p) & (p > 0)
         rejected_mask = ~tradable & (t != q)
@@ -77,7 +93,9 @@ class RiskManager:
                 new_abs = abs_q + wc_scale * inc
                 t = np.where(grow, np.sign(t) * new_abs, t)
         targets = pd.Series(t, index=positions.index)
-        return RiskResult(targets, list(positions.index[rejected_mask]), gross_scale, wc_scale)
+        return RiskResult(
+            targets, list(positions.index[rejected_mask]), gross_scale, wc_scale, list(positions.index[blocked_mask])
+        )
 
     def orders_from_targets(self, targets: pd.Series, positions: pd.Series) -> pd.Series:
         orders = targets - positions

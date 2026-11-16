@@ -70,7 +70,7 @@ def corp_event(symbol, ex_date, amount, dtype="Income", declared=None):
 def vectorized_price_plus_dividend_pnl(market: MarketData, positions: pd.DataFrame) -> pd.Series:
     """Independent check of the ledger: $ held at the prior close x split/dividend-adjusted total return."""
     close = market.eod["close"].ffill()
-    tr = (market.split_ratio * (close + market.cash_dividend)) / close.shift(1) - 1
+    tr = (market.split_ratio * close + market.cash_dividend) / close.shift(1) - 1  # cash per pre-split share
     held_value = positions.shift(1) * close.shift(1)
     return (held_value * tr).where(held_value != 0, 0.0).sum(axis=1)
 

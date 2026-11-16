@@ -20,6 +20,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from src.data_quality import DataQualityReport, assess
+
 logger = logging.getLogger(__name__)
 
 EOD_FIELDS = [
@@ -56,8 +58,11 @@ class MarketData:
     snap[field] : DataFrame (dates x symbols), 3PM snapshot (last, bid, ask, mid, price).
     corp_actions: long DataFrame of events with `kind` and `trade_date` (effective trading date).
     split_ratio : DataFrame (dates x symbols), share multiplier effective at the start of each date (1 = none).
-    cash_dividend: DataFrame (dates x symbols), cash per share paid to holders at the prior close.
+    cash_dividend: DataFrame (dates x symbols), cash per share paid to holders at the prior close
+                   (per pre-split share if a split takes effect on the same date).
     total_return: DataFrame (dates x symbols), close-to-close total return incl. splits & dividends.
+    quality     : DataQualityReport built from the full sample (missing dividend records, unrecorded
+                  splits, and the resulting exclusion list). Kept unchanged by subset().
     """
 
     dates: pd.DatetimeIndex
@@ -69,6 +74,7 @@ class MarketData:
     cash_dividend: pd.DataFrame
     total_return: pd.DataFrame
     symbology: pd.DataFrame = field(default_factory=pd.DataFrame)
+    quality: DataQualityReport | None = None
 
     # ------------------------------------------------------------------ build
     @classmethod
@@ -122,10 +128,18 @@ class MarketData:
         ca, split_ratio, cash_div = _build_corp_actions(corp_actions, dates, symbols)
         close = eod_panels["close"]
         prev_close = close.shift(1)
-        total_return = (split_ratio * (close + cash_div)) / prev_close - 1.0
+        # One share held at the prior close becomes split_ratio shares worth `close` each and receives
+        # `cash_div` once (the ledger pays cash on the pre-split share count, see Portfolio).
+        total_return = (split_ratio * close + cash_div) / prev_close - 1.0
 
         sym = symbology[symbology["symbol"].isin(symbols)].reset_index(drop=True)
-        return cls(dates, symbols, eod_panels, snap_panels, ca, split_ratio, cash_div, total_return, sym)
+        quality = assess(cash_div, close, split_ratio)
+        if len(quality.excluded):
+            logger.info(
+                "Data quality: %d of %d symbols have missing dividend records or an unrecorded split (gap months: %s)",
+                len(quality.excluded), len(symbols), [str(m) for m in quality.gap_months],
+            )
+        return cls(dates, symbols, eod_panels, snap_panels, ca, split_ratio, cash_div, total_return, sym, quality)
 
     # ------------------------------------------------------------- helpers
     def history_count(self, t_index: int) -> np.ndarray:
@@ -136,6 +150,12 @@ class MarketData:
             cache = np.vstack([np.zeros((1, c.shape[1]), dtype=int), c])
             self._hist_count = cache
         return cache[t_index]
+
+    def excluded_mask(self) -> np.ndarray:
+        """Boolean per symbol: excluded for data-quality reasons (all False when there is no report)."""
+        if self.quality is None:
+            return np.zeros(len(self.symbols), dtype=bool)
+        return self.symbols.isin(self.quality.excluded)
 
     def symbol_for(self, ticker: str) -> str:
         """Map a ticker (e.g. 'AGG') to its ISIN symbol."""
@@ -168,7 +188,7 @@ class MarketData:
             {k: v.loc[d] for k, v in self.eod.items()},
             {k: v.loc[d] for k, v in self.snap.items()},
             ca, self.split_ratio.loc[d], self.cash_dividend.loc[d], self.total_return.loc[d],
-            self.symbology,
+            self.symbology, self.quality,
         )
 
 

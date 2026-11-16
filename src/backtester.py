@@ -32,10 +32,10 @@ class BacktestResult:
     def pnl(self) -> pd.Series:
         return self.daily["pnl"]
 
-    def metrics(self, benchmark_returns: pd.Series | None = None) -> dict:
+    def metrics(self, benchmark_returns: pd.Series | None = None, bill_rate: pd.Series | None = None) -> dict:
         from src.performance import PerformanceAnalyzer
 
-        return PerformanceAnalyzer(self.config).summary(self, benchmark_returns)
+        return PerformanceAnalyzer(self.config).summary(self, benchmark_returns, bill_rate)
 
 
 class Backtester:
@@ -68,6 +68,8 @@ class Backtester:
 
         records, pos_rows, orders, sig_rows, tgt_rows = [], [], [], {}, {}
         warmup = int(getattr(self.strategy, "warmup", 0))
+        # Data-quality exclusions (missing dividend records / unrecorded splits) are never held.
+        blocked = m.excluded_mask() if cfg.clean_universe_only else None
 
         for i, date in enumerate(m.dates):
             portfolio.apply_corporate_actions(split[i], cash_div[i])
@@ -80,9 +82,11 @@ class Backtester:
             if sig is not None and len(sig):
                 sig_rows[date] = sig
 
-            risk = self.risk.check(raw, positions, price_3pm.iloc[i])
+            risk = self.risk.check(raw, positions, price_3pm.iloc[i], blocked)
             order_qty = self.risk.orders_from_targets(risk.targets, positions)
-            report = self.execution.execute(order_qty, date, m.eod["close"].iloc[i], volume.iloc[i], risk.rejected)
+            report = self.execution.execute(
+                order_qty, date, m.eod["close"].iloc[i], volume.iloc[i], risk.rejected, risk.blocked
+            )
             portfolio.apply_fills(report.fills.to_numpy(), close[i], report.costs.to_numpy())
             rec = portfolio.mark(close[i])
 
@@ -95,6 +99,7 @@ class Backtester:
                 dv01=portfolio.dv01(dv01[i]),
                 n_positions=int(np.count_nonzero(portfolio.q)),
                 n_orders=int(np.count_nonzero(order_qty.to_numpy())),
+                n_blocked=len(risk.blocked),
                 gross_scale=risk.gross_scale,
                 worst_case_scale=risk.worst_case_scale,
                 gmv_breach=gmv > cfg.gmv_cap + 1e-6,

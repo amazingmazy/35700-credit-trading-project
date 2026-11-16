@@ -43,18 +43,41 @@ def information_coefficient(signal: pd.DataFrame, fwd: pd.DataFrame, rank: bool 
     return _row_corr(s, f, min_obs).dropna()
 
 
+def newey_west_tstat(x: pd.Series, lags: int) -> float:
+    """t-statistic of the mean with a Newey-West (Bartlett kernel) variance using `lags` autocovariances.
+
+    Daily ICs at horizon h share h-1 days of forward return with their neighbours, so they are serially
+    correlated by construction; lags = h-1 accounts for that overlap.
+    """
+    v = pd.Series(x, dtype=float).dropna().to_numpy()
+    n = len(v)
+    if n < 2:
+        return float("nan")
+    e = v - v.mean()
+    var = float(e @ e) / n
+    for lag in range(1, min(int(lags), n - 1) + 1):
+        var += 2.0 * (1.0 - lag / (lags + 1.0)) * float(e[lag:] @ e[:-lag]) / n
+    if not var > 1e-18 * max(1.0, float(v.mean()) ** 2):  # zero variance up to rounding
+        return float("nan")
+    return float(v.mean() / math.sqrt(var / n))
+
+
 def ic_summary(ic: pd.Series, horizon: int = 1, periods_per_year: int = 252) -> dict:
+    """`t_stat` allows for the overlap of forward windows when horizon > 1 (Newey-West, horizon-1 lags);
+    `t_stat_naive` treats the daily ICs as independent."""
     ic = ic.dropna()
     n = len(ic)
     mean = float(ic.mean()) if n else float("nan")
     sd = float(ic.std(ddof=1)) if n > 1 else float("nan")
     icir = mean / sd if n > 1 and sd > 0 else float("nan")
+    t_naive = icir * math.sqrt(n) if np.isfinite(icir) else float("nan")
     return {
         "mean": mean,
         "std": sd,
         "icir": icir,
         "icir_annualized": icir * math.sqrt(periods_per_year / horizon) if np.isfinite(icir) else float("nan"),
-        "t_stat": icir * math.sqrt(n) if np.isfinite(icir) else float("nan"),
+        "t_stat": t_naive if horizon <= 1 else newey_west_tstat(ic, horizon - 1),
+        "t_stat_naive": t_naive,
         "hit_rate": float((ic > 0).mean()) if n else float("nan"),
         "n_days": n,
     }

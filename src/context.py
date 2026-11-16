@@ -84,9 +84,15 @@ class DecisionContext:
         return p.notna() & (p > 0)
 
     def universe(self, min_history: int = 20) -> pd.Index:
-        """Point-in-time universe: >= min_history EOD closes through T-1 and a valid 3PM price."""
+        """Point-in-time universe: >= min_history EOD closes through T-1 and a valid 3PM price.
+
+        With config.clean_universe_only (default) symbols with missing dividend records or an unrecorded
+        split are left out. That exclusion list comes from the full sample (see src/data_quality.py).
+        """
         counts = self._market.history_count(self._i)
         ok = (counts >= min_history) & self.tradable().to_numpy()
+        if self.config.clean_universe_only:
+            ok &= ~self._market.excluded_mask()
         return self.symbols[ok]
 
     def weights_to_shares(self, weights: pd.Series, gross: float | None = None) -> pd.Series:

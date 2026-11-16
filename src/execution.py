@@ -36,6 +36,7 @@ class ExecutionHandler:
         close: pd.Series,
         volume: pd.Series,
         rejected: list[str] | None = None,
+        blocked: list[str] | None = None,
     ) -> ExecutionReport:
         idx = orders.index
         q = orders.to_numpy(dtype=float)
@@ -50,6 +51,10 @@ class ExecutionHandler:
         if self.record_orders:
             for sym in rejected or []:
                 o = Order(sym, date, 0.0, reason="no valid 3PM price")
+                o.transition(OrderState.REJECTED)
+                order_log.append(o)
+            for sym in blocked or []:
+                o = Order(sym, date, 0.0, reason="excluded: incomplete corporate-action records")
                 o.transition(OrderState.REJECTED)
                 order_log.append(o)
             for k in np.flatnonzero(q != 0):

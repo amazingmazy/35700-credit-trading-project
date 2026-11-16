@@ -15,7 +15,7 @@ from pathlib import Path
 from src.backtester import Backtester
 from src.config import BacktestConfig
 from src.data_loader import DataLoader
-from src.performance import PerformanceAnalyzer
+from src.performance import SHARPE_AUDIT_THRESHOLD, PerformanceAnalyzer, bill_rate_from_market
 from src.plotting import plot_result
 from src.signal_analysis import SignalAnalyzer
 from src.strategies import STRATEGY_REGISTRY
@@ -49,13 +49,24 @@ def main(argv=None) -> dict:
     bench = None
     if args.benchmark and args.benchmark.lower() != "none":
         bench = market.total_return[market.symbol_for(args.benchmark)].fillna(0.0)
-    metrics = PerformanceAnalyzer(config).summary(result, bench)
+    # T-bill rate from the supplied data (SHV yield field), used for the net-of-financing Sharpe.
+    metrics = PerformanceAnalyzer(config).summary(result, bench, bill_rate_from_market(market))
 
     print(f"\n=== {result.strategy_name} ({market.dates[0].date()} -> {market.dates[-1].date()}) ===")
     print(PerformanceAnalyzer.format_summary(metrics))
+    if metrics.get("sharpe_audit_required"):
+        print(f"\nNOTE: Sharpe net of financing is above {SHARPE_AUDIT_THRESHOLD:g}. Audit it before reporting: reconcile "
+              "returns to yields, check the return distribution and worst days, and check the data behind it.")
+    quality = market.quality.summary() if market.quality is not None else None
+    if quality is not None:
+        print(f"\nData quality: {quality['n_clean']} of {quality['n_symbols']} ETFs have complete corporate-action "
+              f"records; {quality['n_excluded']} are excluded (clean_universe_only={config.clean_universe_only}).")
 
     out = Path(args.out) / result.strategy_name
     out.mkdir(parents=True, exist_ok=True)
+    if quality is not None:
+        with open(out / "data_quality.json", "w") as f:
+            json.dump(quality, f, indent=2)
     result.daily.to_csv(out / "daily.csv")
     result.positions.loc[:, (result.positions != 0).any()].to_csv(out / "positions.csv")
     if not result.orders.empty:

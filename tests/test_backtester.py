@@ -123,8 +123,34 @@ class TestCorporateActionsInPnL:
         p = base_prices()
         p["B"][list(ALL_DATES).index(ex):] = 25.0
         m = make_market(prices=p)  # no corp action row -> raw price drop shows up as a loss
-        r = run(m, FixedTargets({"B": 1000}, hold_after_first=True))
+        # clean_universe_only=False: with the default, the unrecorded split is detected and B is never held
+        r = run(m, FixedTargets({"B": 1000}, hold_after_first=True), clean_universe_only=False)
         assert r.daily.loc[ex, "pnl"] == pytest.approx(-25_000)
+
+    def test_unrecorded_split_is_blocked_by_default(self):
+        ex = TRADING_DATES[5]
+        p = base_prices()
+        p["B"][list(ALL_DATES).index(ex):] = 25.0
+        m = make_market(prices=p)  # price halves with no split record
+        assert list(m.quality.excluded) == ["B"]
+        r = run(m, FixedTargets({"B": 1000, "A": 100}, hold_after_first=True))
+        assert (r.positions["B"] == 0).all() and r.positions["A"].iloc[-1] == 100
+        assert r.daily["pnl"].min() > -1.0  # no false -25,000 loss (only the cost of buying A)
+        assert r.daily["n_blocked"].iloc[0] == 1
+        blocked = r.orders[r.orders["state"] == "REJECTED"]
+        assert (blocked["symbol"] == "B").all() and blocked["reason"].str.startswith("excluded").all()
+
+    def test_split_and_dividend_on_the_same_day(self):
+        # 2:1 split and a $1 distribution (per pre-split share) on the same date
+        ex = TRADING_DATES[5]
+        p = base_prices()
+        p["B"][list(ALL_DATES).index(ex):] = 25.0
+        m = make_market(prices=p, corp_rows=[corp_event("B", ex, 2.0, "Stock Split"), corp_event("B", ex, 1.0)])
+        r = run(m, FixedTargets({"B": 1000}, hold_after_first=True))
+        assert r.daily.loc[ex, "pnl"] == pytest.approx(1000.0)  # 1000 shares x $1; the split itself is neutral
+        assert m.total_return.loc[ex, "B"] == pytest.approx(1000.0 / (1000 * 50.0))
+        alt = vectorized_price_plus_dividend_pnl(m, r.positions)
+        np.testing.assert_allclose(r.daily["price_pnl"] + r.daily["dividends"], alt, atol=1e-6)
 
 
 class TestCapitalLimits:

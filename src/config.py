@@ -28,9 +28,13 @@ class BacktestConfig:
     cost_per_share: float = 0.0035  # charged on every share actually traded
     whole_shares: bool = True  # targets/orders are truncated toward zero
 
+    # Data quality: if True, ETFs with missing dividend records or an unrecorded split (src/data_quality.py)
+    # are left out of ctx.universe() and any target in them is rejected by the risk check.
+    clean_universe_only: bool = True
+
     # Reporting
     periods_per_year: int = 252
-    risk_free_rate: float = 0.0
+    risk_free_rate: float = 0.0  # ANNUALIZED rate; the project statement fixes it at 0
     # Per-share $DV01 = dv01_field * dv01_scale. Empirically YAS_RISK ~= close * mod_duration / 100,
     # i.e. the price change for a 100bp move, so $ per 1bp = YAS_RISK / 100.
     dv01_scale: float = 0.01
