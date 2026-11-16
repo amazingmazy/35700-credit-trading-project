@@ -221,3 +221,10 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# --- project-specific ---
+# Supplied course data (Bloomberg-sourced) and instructor notebooks are not committed (public repo)
+data/
+*.parquet
+Credit ETF *.ipynb
+results/
