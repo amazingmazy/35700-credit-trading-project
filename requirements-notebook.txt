@@ -1,0 +1,5 @@
+# Only needed to run notebooks/credit_etf_research.ipynb (not used by the engine, the tests or CI)
+-r requirements.txt
+ipykernel>=6
+nbconvert>=7
+nbformat>=5
